@@ -1,0 +1,117 @@
+# Data Quality Configuration for Great Expectations
+# This file defines data sources, expectations, and validation settings
+
+data_sources:
+  databricks_delta:
+    name: "databricks_delta_source"
+    type: "spark"
+    catalog: "hptest"
+    connection_string: "databricks+connector://token:${DATABRICKS_TOKEN}@${DATABRICKS_SERVER_HOSTNAME}:443/${DATABRICKS_HTTP_PATH}"
+    
+tables:
+  - name: "test1"
+    catalog: "hptest"
+    schema: "default"
+    expectations:
+      - name: "expect_table_row_count_to_be_between"
+        parameters:
+          min_value: 1
+          max_value: 1000000
+      - name: "expect_table_columns_to_match_ordered_list"
+        parameters:
+          column_list: ["id", "name", "email", "created_date"]
+      - name: "expect_column_values_to_not_be_null"
+        column: "id"
+      - name: "expect_column_values_to_be_unique"
+        column: "id"
+      - name: "expect_column_values_to_not_be_null"
+        column: "name"
+      - name: "expect_column_values_to_match_regex"
+        column: "email"
+        parameters:
+          regex: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+      - name: "expect_column_values_to_be_of_type"
+        column: "created_date"
+        parameters:
+          type_: "TimestampType"
+          
+  - name: "test2"
+    catalog: "hptest"
+    schema: "default"
+    expectations:
+      - name: "expect_table_row_count_to_be_between"
+        parameters:
+          min_value: 1
+          max_value: 500000
+      - name: "expect_table_columns_to_match_ordered_list"
+        parameters:
+          column_list: ["product_id", "product_name", "price", "category"]
+      - name: "expect_column_values_to_not_be_null"
+        column: "product_id"
+      - name: "expect_column_values_to_be_unique"
+        column: "product_id"
+      - name: "expect_column_values_to_not_be_null"
+        column: "product_name"
+      - name: "expect_column_values_to_be_between"
+        column: "price"
+        parameters:
+          min_value: 0
+          max_value: 10000
+      - name: "expect_column_values_to_be_in_set"
+        column: "category"
+        parameters:
+          value_set: ["Electronics", "Clothing", "Books", "Home", "Sports"]
+
+checkpoints:
+  - name: "test1_checkpoint"
+    table: "test1"
+    validation_operator_name: "action_list_operator"
+    batches:
+      - batch_kwargs:
+          table: "hptest.default.test1"
+          data_asset_name: "test1"
+    actions:
+      - name: "store_validation_result"
+        action:
+          class_name: "StoreValidationResultAction"
+      - name: "update_data_docs"
+        action:
+          class_name: "UpdateDataDocsAction"
+          
+  - name: "test2_checkpoint"
+    table: "test2"
+    validation_operator_name: "action_list_operator"
+    batches:
+      - batch_kwargs:
+          table: "hptest.default.test2"
+          data_asset_name: "test2"
+    actions:
+      - name: "store_validation_result"
+        action:
+          class_name: "StoreValidationResultAction"
+      - name: "update_data_docs"
+        action:
+          class_name: "UpdateDataDocsAction"
+
+data_docs:
+  sites:
+    local_site:
+      class_name: "SiteBuilder"
+      store_backend:
+        class_name: "TupleFilesystemStoreBackend"
+        base_directory: "/tmp/gx_data_docs/"
+      site_index_builder:
+        class_name: "DefaultSiteIndexBuilder"
+
+storage:
+  adls_gen2:
+    account_name: "${ADLS_ACCOUNT_NAME}"
+    account_key: "${ADLS_ACCOUNT_KEY}"
+    container_name: "data-quality-results"
+    results_path: "validation_results"
+    docs_path: "data_docs"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_path: "/tmp/dq_validation.log"
