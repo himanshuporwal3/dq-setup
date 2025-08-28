@@ -6,11 +6,10 @@ This module parses the YAML configuration file and creates Great Expectations ob
 import yaml
 import os
 from typing import Dict, List, Any, Optional
-from great_expectations import get_context
-from great_expectations.core.expectation_suite import ExpectationSuite
-from great_expectations.core.expectation_configuration import ExpectationConfiguration
-from great_expectations.checkpoint import Checkpoint
-from great_expectations.data_context import DataContext
+import great_expectations as gx
+from great_expectations.expectations.expectation_configuration import ExpectationConfiguration
+from great_expectations.core import ExpectationSuite
+from great_expectations.checkpoint.checkpoint import Checkpoint
 
 from ..utils.logger import setup_logger
 from ..exceptions.custom_exceptions import ConfigurationError, ValidationError
@@ -66,19 +65,19 @@ class DQYamlParser:
             logger.error(error_msg)
             raise ConfigurationError(error_msg)
     
-    def initialize_gx_context(self) -> DataContext:
+    def initialize_gx_context(self):
         """
         Initialize Great Expectations Data Context
         
         Returns:
-            DataContext: Initialized GX Data Context
+            GX Data Context: Initialized GX Data Context
             
         Raises:
             ConfigurationError: If context initialization fails
         """
         try:
             # Initialize GX context
-            self.context = get_context()
+            self.context = gx.get_context()
             
             # Configure data sources if specified
             if 'data_sources' in self.config:
@@ -144,12 +143,12 @@ class DQYamlParser:
             logger.error(error_msg)
             raise ConfigurationError(error_msg)
     
-    def create_expectation_suites(self) -> Dict[str, ExpectationSuite]:
+    def create_expectation_suites(self) -> Dict[str, Any]:
         """
         Create expectation suites for all configured tables
         
         Returns:
-            Dict[str, ExpectationSuite]: Dictionary of table names to expectation suites
+            Dict[str, Any]: Dictionary of table names to expectation suites
             
         Raises:
             ValidationError: If expectation suite creation fails
@@ -163,40 +162,42 @@ class DQYamlParser:
                 table_name = table_config['name']
                 expectations_config = table_config.get('expectations', [])
                 
-                # Create or get existing expectation suite
+                # Create or update expectation suite
                 suite_name = f"{table_name}_suite"
                 
                 try:
-                    # Try to get existing suite
-                    suite = self.context.get_expectation_suite(suite_name)
-                    logger.info(f"Retrieved existing expectation suite: {suite_name}")
-                except:
-                    # Create new suite if it doesn't exist
-                    suite = self.context.create_expectation_suite(suite_name, overwrite_existing=True)
-                    logger.info(f"Created new expectation suite: {suite_name}")
-                
-                # Add expectations to the suite
-                for exp_config in expectations_config:
-                    expectation_name = exp_config['name']
-                    expectation_params = exp_config.get('parameters', {})
-                    
-                    # Handle column-specific expectations
-                    if 'column' in exp_config:
-                        expectation_params['column'] = exp_config['column']
-                    
-                    # Create expectation configuration
-                    expectation_configuration = ExpectationConfiguration(
-                        expectation_type=expectation_name,
-                        kwargs=expectation_params
+                    # Create/update expectation suite
+                    suite = self.context.add_or_update_expectation_suite(
+                        expectation_suite_name=suite_name
                     )
+                    logger.info(f"Created/updated expectation suite: {suite_name}")
                     
-                    # Add expectation to suite
-                    suite.add_expectation(expectation_configuration)
-                    logger.debug(f"Added expectation {expectation_name} to suite {suite_name}")
-                
-                # Save the suite
-                self.context.save_expectation_suite(suite)
-                expectation_suites[table_name] = suite
+                    # Add expectations to the suite
+                    for exp_config in expectations_config:
+                        expectation_name = exp_config['name']
+                        expectation_params = exp_config.get('parameters', {})
+                        
+                        # Handle column-specific expectations
+                        if 'column' in exp_config:
+                            expectation_params['column'] = exp_config['column']
+                        
+                        # Create expectation configuration
+                        expectation_configuration = ExpectationConfiguration(
+                            expectation_type=expectation_name,
+                            kwargs=expectation_params
+                        )
+                        
+                        # Add expectation to suite
+                        suite.add_expectation(expectation_configuration)
+                        logger.debug(f"Added expectation {expectation_name} to suite {suite_name}")
+                    
+                    # Update the suite in context
+                    self.context.add_or_update_expectation_suite(expectation_suite=suite)
+                    expectation_suites[table_name] = suite
+                    
+                except Exception as e:
+                    logger.error(f"Error creating expectation suite for {table_name}: {e}")
+                    continue
                 
                 logger.info(f"Created expectation suite for table {table_name} with {len(expectations_config)} expectations")
             
@@ -207,15 +208,15 @@ class DQYamlParser:
             logger.error(error_msg)
             raise ValidationError(error_msg)
     
-    def create_checkpoints(self, expectation_suites: Dict[str, ExpectationSuite]) -> Dict[str, Checkpoint]:
+    def create_checkpoints(self, expectation_suites: Dict[str, Any]) -> Dict[str, Any]:
         """
         Create checkpoints for validation execution
         
         Args:
-            expectation_suites (Dict[str, ExpectationSuite]): Dictionary of expectation suites
+            expectation_suites (Dict[str, Any]): Dictionary of expectation suites
             
         Returns:
-            Dict[str, Checkpoint]: Dictionary of checkpoint names to checkpoint objects
+            Dict[str, Any]: Dictionary of checkpoint names to checkpoint objects
             
         Raises:
             ValidationError: If checkpoint creation fails
@@ -233,46 +234,37 @@ class DQYamlParser:
                     logger.warning(f"No expectation suite found for table {table_name}, skipping checkpoint {checkpoint_name}")
                     continue
                 
-                # Create checkpoint configuration
-                checkpoint_dict = {
-                    "name": checkpoint_name,
-                    "config_version": 1.0,
-                    "template_name": None,
-                    "run_name_template": f"{checkpoint_name}_%Y%m%d-%H%M%S",
-                    "expectation_suite_name": f"{table_name}_suite",
-                    "batch_request": {
-                        "datasource_name": self.config['data_sources']['databricks_delta']['name'],
-                        "data_connector_name": "default_runtime_data_connector",
-                        "data_asset_name": table_name,
-                        "runtime_parameters": {
-                            "query": f"SELECT * FROM {self.config['data_sources']['databricks_delta']['catalog']}.default.{table_name}"
-                        }
-                    },
-                    "action_list": [
-                        {
-                            "name": "store_validation_result",
-                            "action": {
-                                "class_name": "StoreValidationResultAction"
+                # Create checkpoint using modern API
+                try:
+                    checkpoint = self.context.add_or_update_checkpoint(
+                        name=checkpoint_name,
+                        validations=[
+                            {
+                                "expectation_suite_name": f"{table_name}_suite",
+                                # We'll set batch_request dynamically during validation
                             }
-                        },
-                        {
-                            "name": "update_data_docs",
-                            "action": {
-                                "class_name": "UpdateDataDocsAction"
+                        ],
+                        action_list=[
+                            {
+                                "name": "store_validation_result",
+                                "action": {
+                                    "class_name": "StoreValidationResultAction"
+                                }
+                            },
+                            {
+                                "name": "update_data_docs",
+                                "action": {
+                                    "class_name": "UpdateDataDocsAction"
+                                }
                             }
-                        }
-                    ]
-                }
-                
-                # Create and save checkpoint
-                checkpoint = Checkpoint(
-                    name=checkpoint_name,
-                    data_context=self.context,
-                    **checkpoint_dict
-                )
-                
-                self.context.add_checkpoint(checkpoint=checkpoint)
-                checkpoints[checkpoint_name] = checkpoint
+                        ]
+                    )
+                    
+                    checkpoints[checkpoint_name] = checkpoint
+                    
+                except Exception as e:
+                    logger.error(f"Error creating checkpoint for {table_name}: {e}")
+                    continue
                 
                 logger.info(f"Created checkpoint: {checkpoint_name} for table: {table_name}")
             
